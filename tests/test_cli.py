@@ -70,10 +70,11 @@ def test_extract_theme_arg():
 
 
 def test_extract_agent_arg_maps_flags_to_ids():
-    # --claude / --codex / --kimi 从任意位置提取并移除；映射到 adapter id；未给 → None
+    # --claude / --codex / --kimi / --agy 从任意位置提取并移除；映射到 adapter id；未给 → None
     assert cli._extract_agent_arg(["daily", "--claude"]) == (["daily"], "claude-code")
     assert cli._extract_agent_arg(["--codex", "weekly"]) == (["weekly"], "codex")
     assert cli._extract_agent_arg(["--kimi", "daily"]) == (["daily"], "kimi")
+    assert cli._extract_agent_arg(["--agy", "daily"]) == (["daily"], "agy")
     assert cli._extract_agent_arg(["monthly"]) == (["monthly"], None)
     # 重复相同 flag 幂等；不同 flag 混用退出（下一用例覆盖）
     assert cli._extract_agent_arg(["--claude", "--claude", "status"]) == (["status"], "claude-code")
@@ -87,6 +88,9 @@ def test_extract_agent_arg_conflict_exits(monkeypatch, capsys):
     with pytest.raises(SystemExit) as e2:
         cli._extract_agent_arg(["--kimi", "--codex", "daily"])
     assert e2.value.code == 1
+    with pytest.raises(SystemExit) as e3:
+        cli._extract_agent_arg(["--agy", "--claude", "daily"])
+    assert e3.value.code == 1
 
 
 def test_cli_agent_flag_filters_agents(monkeypatch):

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from rich.text import Text
 
 from . import config, i18n
-from .adapters import claude, codex, kimi
+from .adapters import agy, claude, codex, kimi
 from .adapters.rate_limits import load_rate_limits as load_claude_rate_limits
 from .adapters.registry import detect_agents
 from .adapters.types import StatusSummary
@@ -32,7 +32,7 @@ from .ui.tables import (
     render_weekly,
 )
 
-AGENT_LOADERS = {"claude-code": claude, "codex": codex, "kimi": kimi}
+AGENT_LOADERS = {"claude-code": claude, "codex": codex, "kimi": kimi, "agy": agy}
 
 
 def _load_codex_rate_limits():
@@ -44,7 +44,7 @@ def _load_codex_rate_limits():
 RATE_LIMIT_LOADERS = {"claude-code": load_claude_rate_limits, "codex": _load_codex_rate_limits}
 
 # agent 过滤 flag → agent_id（issue #19；_extract_agent_arg 解析、_select_agents 反查共用）
-_FLAG_TO_ID = {"--claude": "claude-code", "--codex": "codex", "--kimi": "kimi"}
+_FLAG_TO_ID = {"--claude": "claude-code", "--codex": "codex", "--kimi": "kimi", "--agy": "agy"}
 
 # 排序字段 → stats 属性名（单一权威表）。
 # "time" 的属性因命令而异（daily=date / weekly=week / sessions=start_time），不在此表，走 default_attr。

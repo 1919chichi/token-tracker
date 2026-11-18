@@ -289,7 +289,7 @@ def _alive_pids(want: dict[int, float | None]) -> set[int]:
     一次 `ps -o pid=,lstart=` 批量查询（强制 C locale 保英文日期格式）；lstart 按本进程 TZ
     解析回 epoch（ps 子进程继承同一 TZ，mktime 同源可逆），与 startedAt 差超 _START_TOLERANCE_S
     视为 pid 已被复用（判死）。lstart 解析不了只探活不比时间——失败方向
-    是「多显示一个已关会话」，绝不误杀活会话。ps 不可用退化为 `os.kill(pid, 0)`。
+    是「多显示一个已关会话」，绝不误杀活会话。ps 不可用退化为 `_pid_exists` 纯探活。
     """
     if not want:
         return set()
@@ -325,7 +325,40 @@ def _parse_lstart(raw: str) -> float | None:
         return None
 
 
+_WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WIN_STILL_ACTIVE = 259
+_WIN_ERROR_ACCESS_DENIED = 5
+
+
+def _pid_exists_windows(pid: int) -> bool:
+    """Windows 探活：OpenProcess + GetExitCodeProcess。
+
+    不能用 `os.kill(pid, 0)`：Windows 上 0 == signal.CTRL_C_EVENT，Python 会调
+    GenerateConsoleCtrlEvent 向整个控制台广播 Ctrl+C，把同控制台的宿主（如 agy CLI）一起中断。
+    """
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.OpenProcess(_WIN_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+    if not handle:
+        # 无权打开 = 进程在、只是无权查询（与 POSIX 分支 PermissionError 同口径）
+        return ctypes.get_last_error() == _WIN_ERROR_ACCESS_DENIED  # type: ignore[attr-defined]
+    try:
+        code = ctypes.c_uint32()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == _WIN_STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_exists(pid: int) -> bool:
+    if os.name == "nt":
+        return _pid_exists_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

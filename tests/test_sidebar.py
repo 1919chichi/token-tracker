@@ -466,6 +466,7 @@ def test_live_claude_sids_maps_alive_pids_to_sessions(tmp_path, monkeypatch):
     assert seen == {111: 1783617514.463, 222: None, 333: None}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="依赖 ps -o lstart；Windows 无 ps，走 _pid_exists 纯探活")
 def test_alive_pids_own_process_and_start_time_guard():
     me = os.getpid()
     assert sidebar._alive_pids({}) == set()
@@ -481,6 +482,23 @@ def test_alive_pids_own_process_and_start_time_guard():
     real_start = sidebar._parse_lstart(" ".join(lstart.split()))
     assert real_start is not None
     assert me in sidebar._alive_pids({me: real_start})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 专属探活路径")
+def test_pid_exists_windows_never_sends_console_ctrl_event(monkeypatch):
+    # Windows 上 os.kill(pid, 0) 等于向整个控制台广播 Ctrl+C，会把宿主 agy CLI 一起中断
+    def forbidden_kill(pid, sig):
+        raise AssertionError(f"os.kill({pid}, {sig}) must not be used on Windows")
+
+    monkeypatch.setattr(os, "kill", forbidden_kill)
+    assert sidebar._pid_exists(os.getpid())
+    finished = subprocess.Popen(["cmd", "/c", "exit 0"])
+    finished.wait()
+    # 句柄仍被 Popen 持有时进程对象还在，但退出码已非 STILL_ACTIVE → 判死
+    assert not sidebar._pid_exists(finished.pid)
+    # ps 不可用时 _alive_pids 退回纯探活，同样不得发信号
+    monkeypatch.setattr(sidebar.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no ps")))
+    assert sidebar._alive_pids({os.getpid(): None}) == {os.getpid()}
 
 
 def test_parse_lstart_roundtrip_and_failure():
