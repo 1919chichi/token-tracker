@@ -14,7 +14,12 @@ Ctx 显示「已用 / 总容量 + 百分比」，不画进度条、不带重置�
 字段解析对 agy 版本差异做防御式兼容：同一语义按多条候选路径取值，全部取不到就跳过。
 """
 __version__ = "__AGY_STATUSLINE_VERSION__"
-import json, os, re, subprocess, sys, tempfile, time, unicodedata
+import json, os, re, subprocess, sys, tempfile, threading, time, unicodedata
+
+# 进程硬性存活上限（秒）：agy 约 1s 未拿到输出就判失败并结束它直接拉起的进程，
+# 但 Windows 不连带结束子孙进程，本脚本若卡在 stdin.read()（管道写端未关）会成为孤儿进程永久挂住。
+# 到点直接 os._exit，不依赖 stdin EOF、git 子进程或 agy 回收。
+_HARD_DEADLINE = 2.0
 
 # 配色由 agy_setup 烘焙时从 token_tracker.ui.themes 注入（当前主题），与 CC / Kimi 状态栏同源
 THEME_COLORS = __STATUSLINE_TRUECOLOR__
@@ -139,32 +144,45 @@ def _git_branch_from_head(cwd):
     return ""
 
 
+def _run_quick(argv, cwd, timeout):
+    """跑子进程取 stdout，超时返回 None 且不再等待管道关闭。
+    不用 check_output(timeout=)：它在 Windows 上超时后只结束直接子进程，随后无超时地 communicate()；
+    Git for Windows 的 cmd\\git.exe 是启动器，真正的 git.exe 是孙进程且继承了 stdout，
+    会让“超时”变成等 git 真正跑完。communicate 的读线程是 daemon 线程，弃之不等即可。"""
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return None
+    except Exception:
+        return None
+    return out if proc.returncode == 0 else None
+
+
 def _git_probe(cwd):
     """(branch, added, deleted, untracked)：分支读 HEAD 文件，增删行 / 未跟踪数复用 tt 的 git 口径。"""
     branch = _git_branch_from_head(cwd)
     if not branch:
         return ("", 0, 0, 0)
     added = deleted = untracked = 0
-    try:
-        out = subprocess.check_output(
-            ["git", "diff", "HEAD", "--numstat"], cwd=cwd,
-            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", timeout=0.25)
-        for line in out.splitlines():
-            parts = line.split("\t")
-            if len(parts) >= 2:
-                if parts[0].isdigit():
-                    added += int(parts[0])
-                if parts[1].isdigit():
-                    deleted += int(parts[1])
-    except Exception:
-        pass
-    try:
-        out = subprocess.check_output(
-            ["git", "ls-files", "--others", "--exclude-standard"], cwd=cwd,
-            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", timeout=0.2)
-        untracked = sum(1 for ln in out.splitlines() if ln.strip())
-    except Exception:
-        pass
+    out = _run_quick(["git", "diff", "HEAD", "--numstat"], cwd, 0.25)
+    for line in (out or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            if parts[0].isdigit():
+                added += int(parts[0])
+            if parts[1].isdigit():
+                deleted += int(parts[1])
+    out = _run_quick(["git", "ls-files", "--others", "--exclude-standard"], cwd, 0.2)
+    untracked = sum(1 for ln in (out or "").splitlines() if ln.strip())
     return (branch, added, deleted, untracked)
 
 
@@ -435,7 +453,15 @@ def truncate_visible(line, width):
     return "".join(out)
 
 
+def _arm_deadline(seconds=_HARD_DEADLINE):
+    timer = threading.Timer(seconds, os._exit, args=(0,))
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def main():
+    _arm_deadline()
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:

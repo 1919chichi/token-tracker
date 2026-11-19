@@ -28,7 +28,7 @@ from .ui import themes
 AGY_SETTINGS = os.path.join(agy_home(), "settings.json")
 SCRIPT_PATH = os.path.join(config.CONFIG_DIR, "agy-statusline.py")
 BACKUP_PATH = os.path.join(config.CONFIG_DIR, "agy-statusline-backup.json")
-AGY_STATUSLINE_VERSION = "1.0"
+AGY_STATUSLINE_VERSION = "1.1"  # 1.1: 2s 硬性存活上限防孤儿进程挂住；git 子进程超时不再等孙进程关管道
 
 # 与 hooks.py 的三组件版本号互不干扰：本脚本只由本模块烘焙。
 _MARKER = "agy-statusline.py"

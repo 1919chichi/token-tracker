@@ -1,7 +1,11 @@
 """Antigravity CLI (agy) adapter：transcript.jsonl 的 PLANNER_RESPONSE → UsageEntry。"""
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -181,3 +185,60 @@ def test_statusline_truncate_visible_counts_cjk_and_skips_ansi():
     truncate = ns["truncate_visible"]
     assert truncate("\x1b[1m中文abc\x1b[0m", 5) == "\x1b[1m中文a\x1b[0m"
     assert truncate("plain-text", 5) == "plain"
+
+
+def _spawn_statusline(tmp_path: Path) -> subprocess.Popen:
+    from token_tracker import agy_setup
+
+    script = tmp_path / "agy-statusline.py"
+    script.write_text(agy_setup.render_script(), encoding="utf-8")
+    env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    return subprocess.Popen(
+        [sys.executable, "-S", str(script)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
+    )
+
+
+def test_statusline_exits_by_itself_when_stdin_never_closes(tmp_path):
+    # agy 超时只结束直接子进程，管道写端没关时脚本会卡在 stdin.read()；硬性上限必须让它自己退出
+    proc = _spawn_statusline(tmp_path)
+    started = time.monotonic()
+    try:
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.close()
+        proc.stdout.close()
+    assert proc.returncode == 0
+    assert time.monotonic() - started < 6
+
+
+def test_statusline_still_renders_one_line_before_deadline(tmp_path):
+    proc = _spawn_statusline(tmp_path)
+    out, _ = proc.communicate(json.dumps({"cwd": str(tmp_path / "demo")}).encode(), timeout=10)
+    assert proc.returncode == 0
+    lines = out.decode("utf-8").splitlines()
+    assert len(lines) == 1 and "[demo]" in lines[0]
+
+
+def test_run_quick_does_not_wait_for_grandchild_holding_stdout():
+    # 模拟 Git for Windows 的启动器：直接子进程拉起继承 stdout 的孙进程后自己也阻塞
+    ns = _statusline_namespace()
+    hold = 4
+    code = (
+        "import subprocess, sys, time;"
+        f"subprocess.Popen([sys.executable, '-c', 'import time; time.sleep({hold})']);"
+        f"time.sleep({hold})"
+    )
+    started = time.monotonic()
+    assert ns["_run_quick"]([sys.executable, "-c", code], None, 0.3) is None
+    assert time.monotonic() - started < hold - 1
+
+
+def test_run_quick_returns_stdout_and_rejects_nonzero_exit():
+    ns = _statusline_namespace()
+    utf8_writer = "import sys; sys.stdout.buffer.write('中文'.encode('utf-8'))"  # 同 git：输出 UTF-8 字节
+    assert ns["_run_quick"]([sys.executable, "-c", utf8_writer], None, 5) == "中文"
+    assert ns["_run_quick"]([sys.executable, "-c", "import sys; sys.exit(1)"], None, 5) is None
